@@ -24,6 +24,8 @@ from keras import backend as K
 from keras.callbacks import TensorBoard, ModelCheckpoint
 from keras.layers import Activation, Conv2D, Dense, Dropout, Flatten, MaxPooling2D, BatchNormalization
 from keras.models import Sequential
+from tensorflow.keras.models import load_model
+
 from keras.optimizers import Adam, SGD, RMSprop
 
 logging.getLogger().setLevel(logging.INFO)
@@ -36,6 +38,8 @@ NUM_CLASSES = 10
 NUM_DATA_BATCHES = 5
 NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 10000 * NUM_DATA_BATCHES
 INPUT_TENSOR_NAME = 'inputs_input'  # needs to match the name of the first layer + "_input"
+
+checkpoint_path  = "/opt/ml/checkpoints"
 
 
 def keras_model_fn(learning_rate, weight_decay, optimizer, momentum, mpi=False, hvd=False):
@@ -204,6 +208,27 @@ def save_model(model, output):
     logging.info("Model successfully saved at: {}".format(output))
 
 
+def load_checkpoint_model(checkpoint_path):
+    files = [f for f in os.listdir(checkpoint_path) if f.endswith('.' + 'h5')]  
+    logging.info("Found Files: {}".format(files))
+    epoch_numbers = [re.search('(\.*[0-9])(?=\.)',f).group() for f in files]
+      
+    max_epoch_number = max(epoch_numbers)
+    max_epoch_index = epoch_numbers.index(max_epoch_number)
+    max_epoch_filename = files[max_epoch_index]
+    
+    logging.info('\nList of available checkpoints:')
+    logging.info('------------------------------------')
+    [logging.info(f) for f in files]
+    logging.info('------------------------------------')
+    logging.info('Checkpoint file for latest epoch: {}'.format(max_epoch_filename))
+    logging.info('Resuming training from epoch: {}'.format(max_epoch_number))
+    logging.info('------------------------------------')
+    
+    resume_model = load_model(f'{checkpoint_path}/{max_epoch_filename}')
+    return resume_model, int(max_epoch_number)
+
+    
 def main(args):
     if 'sourcedir.tar.gz' in args.tensorboard_dir:
         tensorboard_dir = re.sub('source/sourcedir.tar.gz', 'model', args.tensorboard_dir)
@@ -211,6 +236,12 @@ def main(args):
         tensorboard_dir = args.tensorboard_dir
     logging.info("Writing TensorBoard logs to {}".format(tensorboard_dir))
 
+    if os.path.isdir(checkpoint_path):
+        logging.info("Checkpointing directory {} exists".format(checkpoint_path))
+    else:
+        logging.info("Creating checkpointing directory {}".format(checkpoint_path))
+        os.mkdir(checkpoint_path)
+    
     mpi = False
     if 'sagemaker_mpi_enabled' in args.fw_params:
         if args.fw_params['sagemaker_mpi_enabled']:
@@ -234,7 +265,14 @@ def main(args):
     validation_dataset = validation_input_fn()
 
     logging.info("configuring model")
-    model = keras_model_fn(args.learning_rate, args.weight_decay, args.optimizer, args.momentum, mpi, hvd)
+    
+    # Load model
+    if not os.listdir(checkpoint_path):
+        model = keras_model_fn(args.learning_rate, args.weight_decay, args.optimizer, args.momentum, mpi, hvd)
+        epoch_number = 0
+    else:    
+        model, epoch_number = load_checkpoint_model(checkpoint_path)
+        
 
     callbacks = []
     if mpi:
@@ -243,11 +281,11 @@ def main(args):
         callbacks.append(hvd.callbacks.LearningRateWarmupCallback(warmup_epochs=5, verbose=1))
         callbacks.append(keras.callbacks.ReduceLROnPlateau(patience=10, verbose=1))
         if hvd.rank() == 0:
-            callbacks.append(ModelCheckpoint(args.output_dir + '/checkpoint-{epoch}.h5'))
+            callbacks.append(ModelCheckpoint(checkpoint_path + '/checkpoint-{epoch}.h5'))
             callbacks.append(TensorBoard(log_dir=tensorboard_dir, update_freq='epoch'))
     else:
         callbacks.append(keras.callbacks.ReduceLROnPlateau(patience=10, verbose=1))
-        callbacks.append(ModelCheckpoint(args.output_dir + '/checkpoint-{epoch}.h5'))
+        callbacks.append(ModelCheckpoint(checkpoint_path + '/checkpoint-{epoch}.h5'))
         callbacks.append(TensorBoard(log_dir=tensorboard_dir, update_freq='epoch'))
 
     logging.info("Starting training")
@@ -259,6 +297,7 @@ def main(args):
               y=train_dataset[1],
               steps_per_epoch=(num_examples_per_epoch('train') // args.batch_size) // size,
               epochs=args.epochs,
+              initial_epoch=epoch_number,
               validation_data=validation_dataset,
               validation_steps=(num_examples_per_epoch('validation') // args.batch_size) // size,
               callbacks=callbacks)
@@ -277,6 +316,7 @@ def main(args):
             save_model(model, args.model_output_dir)
     else:
         save_model(model, args.model_output_dir)
+        
 
 
 def num_examples_per_epoch(subset='train'):
