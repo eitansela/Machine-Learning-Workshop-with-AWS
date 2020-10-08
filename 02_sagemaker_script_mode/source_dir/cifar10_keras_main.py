@@ -39,8 +39,6 @@ NUM_DATA_BATCHES = 5
 NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 10000 * NUM_DATA_BATCHES
 INPUT_TENSOR_NAME = 'inputs_input'  # needs to match the name of the first layer + "_input"
 
-checkpoint_path  = "/opt/ml/checkpoints"
-
 
 def keras_model_fn(learning_rate, weight_decay, optimizer, momentum, mpi=False, hvd=False):
     """keras_model_fn receives hyperparameters from the training job and returns a compiled keras model.
@@ -236,11 +234,11 @@ def main(args):
         tensorboard_dir = args.tensorboard_dir
     logging.info("Writing TensorBoard logs to {}".format(tensorboard_dir))
 
-    if os.path.isdir(checkpoint_path):
-        logging.info("Checkpointing directory {} exists".format(checkpoint_path))
+    if os.path.isdir(args.checkpoint_path):
+        logging.info("Checkpointing directory {} exists".format(args.checkpoint_path))
     else:
-        logging.info("Creating checkpointing directory {}".format(checkpoint_path))
-        os.mkdir(checkpoint_path)
+        logging.info("Creating Checkpointing directory {}".format(args.checkpoint_path))
+        os.mkdir(args.checkpoint_path)
     
     mpi = False
     if 'sagemaker_mpi_enabled' in args.fw_params:
@@ -267,12 +265,13 @@ def main(args):
     logging.info("configuring model")
     
     # Load model
-    if not os.listdir(checkpoint_path):
+    if not os.listdir(args.checkpoint_path):
         model = keras_model_fn(args.learning_rate, args.weight_decay, args.optimizer, args.momentum, mpi, hvd)
         epoch_number = 0
     else:    
-        model, epoch_number = load_checkpoint_model(checkpoint_path)
+        model, epoch_number = load_checkpoint_model(args.checkpoint_path)
         
+    logging.info("Checkpointing to: {}".format(args.checkpoint_path))
 
     callbacks = []
     if mpi:
@@ -281,11 +280,11 @@ def main(args):
         callbacks.append(hvd.callbacks.LearningRateWarmupCallback(warmup_epochs=5, verbose=1))
         callbacks.append(keras.callbacks.ReduceLROnPlateau(patience=10, verbose=1))
         if hvd.rank() == 0:
-            callbacks.append(ModelCheckpoint(checkpoint_path + '/checkpoint-{epoch}.h5'))
+            callbacks.append(ModelCheckpoint(args.checkpoint_path + '/checkpoint-{epoch}.h5'))
             callbacks.append(TensorBoard(log_dir=tensorboard_dir, update_freq='epoch'))
     else:
         callbacks.append(keras.callbacks.ReduceLROnPlateau(patience=10, verbose=1))
-        callbacks.append(ModelCheckpoint(checkpoint_path + '/checkpoint-{epoch}.h5'))
+        callbacks.append(ModelCheckpoint(args.checkpoint_path + '/checkpoint-{epoch}.h5'))
         callbacks.append(TensorBoard(log_dir=tensorboard_dir, update_freq='epoch'))
 
     logging.info("Starting training")
@@ -332,84 +331,24 @@ def num_examples_per_epoch(subset='train'):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--train',
-        type=str,
-        required=False,
-        default=os.environ.get('SM_CHANNEL_TRAIN'),
-        help='The directory where the CIFAR-10 input data is stored.')
-    parser.add_argument(
-        '--validation',
-        type=str,
-        required=False,
-        default=os.environ.get('SM_CHANNEL_VALIDATION'),
-        help='The directory where the CIFAR-10 input data is stored.')
-    parser.add_argument(
-        '--eval',
-        type=str,
-        required=False,
-        default=os.environ.get('SM_CHANNEL_EVAL'),
-        help='The directory where the CIFAR-10 input data is stored.')
-    parser.add_argument(
-        '--model_dir',
-        type=str,
-        required=True,
-        help='The directory where the model will be stored.')
-    parser.add_argument(
-        '--model_output_dir',
-        type=str,
-        default=os.environ.get('SM_MODEL_DIR'))
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default=os.environ.get('SM_OUTPUT_DIR'))
-    parser.add_argument(
-        '--tensorboard-dir',
-        type=str,
-        default=os.environ.get('SM_MODULE_DIR'))
-    parser.add_argument(
-        '--weight-decay',
-        type=float,
-        default=2e-4,
-        help='Weight decay for convolutions.')
-    parser.add_argument(
-        '--learning-rate',
-        type=float,
-        default=0.001,
-        help="""\
-        This is the inital learning rate value. The learning rate will decrease
-        during training. For more details check the model_fn implementation in
-        this file.\
-        """)
-    parser.add_argument(
-        '--epochs',
-        type=int,
-        default=10,
-        help='The number of steps to use for training.')
-    parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=128,
-        help='Batch size for training.')
-    parser.add_argument(
-        '--data-config',
-        type=json.loads,
-        default=os.environ.get('SM_INPUT_DATA_CONFIG')
-    )
-    parser.add_argument(
-        '--fw-params',
-        type=json.loads,
-        default=os.environ.get('SM_FRAMEWORK_PARAMS')
-    )
-    parser.add_argument(
-        '--optimizer',
-        type=str,
-        default='adam'
-    )
-    parser.add_argument(
-        '--momentum',
-        type=float,
-        default='0.9'
-    )
+    
+    parser.add_argument('--train',type=str,required=False,default=os.environ.get('SM_CHANNEL_TRAIN'),help='The directory where the CIFAR-10 input data is stored.')
+    parser.add_argument('--validation',type=str,required=False,default=os.environ.get('SM_CHANNEL_VALIDATION'),help='The directory where the CIFAR-10 validation data is stored.')
+    parser.add_argument('--eval',type=str,required=False,default=os.environ.get('SM_CHANNEL_EVAL'),
+    help='The directory where the CIFAR-10 input data is stored.')
+    parser.add_argument('--model_dir',type=str,required=True,help='The directory where the model will be stored.')
+    parser.add_argument('--model_output_dir',type=str,default=os.environ.get('SM_MODEL_DIR'))
+    parser.add_argument('--output-dir',type=str,default=os.environ.get('SM_OUTPUT_DIR'))
+    parser.add_argument('--tensorboard-dir',type=str,default=os.environ.get('SM_MODULE_DIR'))
+    parser.add_argument("--checkpoint-path",type=str,default="/opt/ml/checkpoints",help="Path where checkpoints will be saved.")
+    parser.add_argument('--weight-decay',type=float,default=2e-4,help='Weight decay for convolutions.')
+    parser.add_argument('--learning-rate',type=float,default=0.001,help="This is the inital learning rate value. The learning rate will decrease during training. For more details check the model_fn implementation in this file.")
+    parser.add_argument('--epochs',type=int,default=10,help='The number of steps to use for training.')
+    parser.add_argument('--batch-size',type=int,default=128,help='Batch size for training.')
+    parser.add_argument('--data-config',type=json.loads,default=os.environ.get('SM_INPUT_DATA_CONFIG'))
+    parser.add_argument('--fw-params',type=json.loads,default=os.environ.get('SM_FRAMEWORK_PARAMS'))
+    parser.add_argument('--optimizer',type=str,default='adam')
+    parser.add_argument('--momentum',type=float,default='0.9')
+
     args = parser.parse_args()
     main(args)
